@@ -1729,6 +1729,16 @@ async def on_ready() -> None:
 
 
 @bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
+    """コマンドエラーのハンドラ。"""
+    # !seer, !thief, !hunter などはwait_forで処理するため、CommandNotFoundは無視
+    if isinstance(error, commands.CommandNotFound):
+        return
+    # その他のエラーは再送出
+    raise error
+
+
+@bot.event
 async def on_message(message: discord.Message) -> None:
     """メッセージ受信時の処理（プレフィックスコマンド用＆LLM議論）。"""
     if message.author.bot:
