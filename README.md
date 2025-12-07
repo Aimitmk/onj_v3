@@ -1,6 +1,7 @@
 # 🐺 ワンナイト人狼 Discord Bot
 
 Discord上で3〜8人向けのワンナイト人狼風ゲームを遊べるBotです。
+**人数が足りない場合はAIプレイヤー（Grok 4.1 Fast）で補完できます！**
 
 ## 特徴
 
@@ -9,6 +10,16 @@ Discord上で3〜8人向けのワンナイト人狼風ゲームを遊べるBot�
 - **対応役職**: 9種類（村人、人狼、大狼、占い師、怪盗、狩人、吊り人、狂人、村長）
 - **スラッシュコマンド対応**: Discord の `/` コマンドで操作
 - **役職構成カスタマイズ**: ホストがゲーム開始前に役職を自由に変更可能
+- **🤖 AIプレイヤー対応**: 人数が足りない時はLLMプレイヤーで補完
+
+## 🤖 AIプレイヤー機能（NEW!）
+
+人数が足りない場合、**xAI Grok 4.1 Fast Reasoning** を使用したAIプレイヤーでゲームを開始できます。
+
+- `/onj add_bot [人数]` でAIプレイヤーを追加
+- AIプレイヤーは役職に応じて夜の行動を自動実行
+- 議論フェーズでは人間の発言に反応して順番に発言
+- 投票フェーズでは得た情報に基づいて自動投票
 
 ## 🎮 役職説明
 
@@ -53,12 +64,13 @@ Discord上で3〜8人向けのワンナイト人狼風ゲームを遊べるBot�
 
 - Python 3.11 以上
 - [uv](https://github.com/astral-sh/uv) パッケージマネージャー
+- xAI APIキー（AIプレイヤー機能を使用する場合）
 
 ### 1. リポジトリのクローン
 
 ```bash
-git clone <repository-url>
-cd onj_v2
+git clone https://github.com/Aimitmk/onj_v3.git
+cd onj_v3
 ```
 
 ### 2. 仮想環境の作成と有効化
@@ -80,7 +92,7 @@ source .venv/bin/activate
 ### 3. 依存パッケージのインストール
 
 ```bash
-uv pip install discord.py python-dotenv
+uv pip install discord.py python-dotenv httpx
 ```
 
 ### 4. 環境変数の設定
@@ -89,18 +101,28 @@ uv pip install discord.py python-dotenv
 cp .env.example .env
 ```
 
-`.env` ファイルを編集し、Discord Botのトークンを設定します：
+`.env` ファイルを編集し、必要な設定を行います：
 
 ```
 DISCORD_TOKEN=your_bot_token_here
 GUILD_ID=your_server_id_here
+XAI_API_KEY=your_xai_api_key_here
 ```
+
+| 環境変数 | 必須 | 説明 |
+|----------|------|------|
+| `DISCORD_TOKEN` | ✅ | Discord Botのトークン |
+| `GUILD_ID` | ❌ | テストサーバーのID（設定すると即座にコマンド反映） |
+| `XAI_API_KEY` | ❌ | xAI APIキー（AIプレイヤー機能を使用する場合） |
+| `XAI_MODEL` | ❌ | 使用するモデル（デフォルト: grok-4-1-fast-reasoning） |
 
 **GUILD_ID の取得方法：**
 1. Discordの「ユーザー設定」→「詳細設定」→「開発者モード」を ON にする
 2. テストしたいサーバーを右クリック →「サーバーIDをコピー」
 
-※ `GUILD_ID` を設定すると、そのサーバーにのみコマンドが即座に反映されます。設定しない場合はグローバル同期（反映に最大1時間）になります。
+**XAI_API_KEY の取得方法：**
+1. [xAI Console](https://console.x.ai) にアクセス
+2. アカウントを作成し、APIキーを取得
 
 ## 🤖 Discord Botの準備
 
@@ -126,7 +148,7 @@ python bot.py
 
 ```
 ワンナイト人狼Bot がログインしました: BotName#1234
-スラッシュコマンドを同期しました
+ギルド XXXXXXXXXX にコマンドを同期しました: 1個
 ```
 
 ## 📖 遊び方
@@ -135,11 +157,12 @@ python bot.py
 
 1. **ゲーム開始**: `/onj start` で募集フェーズを開始
 2. **参加**: `/onj join` でプレイヤーが参加
-3. **役職設定**: `/onj roles` で役職構成をカスタマイズ（オプション）
-4. **ゲーム開始**: `/onj begin` でゲームを開始（3〜8人必要）
-5. **夜フェーズ**: 各役職がDMで行動を選択
-6. **昼フェーズ**: 議論後、`/onj vote @プレイヤー` で投票
-7. **結果発表**: 処刑結果と勝敗が発表される
+3. **AIプレイヤー追加**: `/onj add_bot` で人数が足りない場合にAIを追加
+4. **役職設定**: `/onj roles` で役職構成をカスタマイズ（オプション）
+5. **ゲーム開始**: `/onj begin` でゲームを開始（3〜8人必要）
+6. **夜フェーズ**: 各役職がDMで行動を選択（時間制限なし、全員完了まで待機）
+7. **昼フェーズ**: 議論後、`/onj vote @プレイヤー` で投票
+8. **結果発表**: 処刑結果と勝敗が発表される
 
 ### コマンド一覧
 
@@ -150,6 +173,8 @@ python bot.py
 | `/onj leave` | ゲームから離脱する |
 | `/onj players` | 現在の参加者を表示する |
 | `/onj roles` | 役職構成を変更する（ホストのみ） |
+| `/onj add_bot [人数]` | AIプレイヤーを追加する（ホストのみ） |
+| `/onj remove_bot [人数]` | AIプレイヤーを削除する（ホストのみ） |
 | `/onj begin` | ゲームを開始する（ホストのみ） |
 | `/onj vote @player` | プレイヤーに投票する |
 | `/onj skip` | 平和村（誰も処刑しない）に投票する |
@@ -185,7 +210,7 @@ python bot.py
 `/onj roles` コマンドで、ボタンUIを使って役職構成を変更できます：
 
 - **+/- ボタン**: 各役職の枚数を増減
-- **🔄 デフォルトに戻す**: デフォルト構成にリセット
+- **🔄 リセット**: デフォルト構成にリセット
 - **✅ 完了**: 設定を確定
 
 **注意**: 役職カードの合計枚数は「プレイヤー人数 + 2（中央カード）」である必要があります。
@@ -204,7 +229,30 @@ python bot.py
 ### 役職構成エラー
 
 - 役職カードの合計枚数が「プレイヤー人数 + 2」になっているか確認してください
-- `/onj roles` で調整するか、「🔄 デフォルトに戻す」を使用してください
+- `/onj roles` で調整するか、「🔄 リセット」を使用してください
+
+### AIプレイヤーが動作しない
+
+- `.env` ファイルに `XAI_API_KEY` が正しく設定されているか確認してください
+- xAI APIの課金が有効になっているか確認してください
+- コンソールのエラーメッセージを確認してください
+
+## 🏗️ プロジェクト構成
+
+```
+onj_v3/
+├── bot.py              # Discord Bot本体
+├── config.py           # ゲーム設定・定数
+├── game/
+│   ├── __init__.py
+│   ├── models.py       # データモデル（Role, Player, GameState等）
+│   ├── logic.py        # ゲームロジック（夜行動、投票、勝敗判定）
+│   └── llm_player.py   # AIプレイヤー（Grok API連携）
+├── pyproject.toml      # 依存関係
+├── .env.example        # 環境変数サンプル
+├── CLAUDE.md           # 開発ガイド
+└── README.md           # このファイル
+```
 
 ## 📄 ライセンス
 
