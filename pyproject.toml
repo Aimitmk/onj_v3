@@ -1,0 +1,20 @@
+[project]
+name = "onenight-werewolf-bot"
+version = "1.1.0"
+description = "ワンナイト人狼風ゲームを遊べるDiscord Bot（LLMプレイヤー対応）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.3.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["game"]
+include = ["bot.py", "config.py"]
+
