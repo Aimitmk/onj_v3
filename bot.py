@@ -37,6 +37,8 @@ from game.logic import (
     register_vote,
     calculate_votes,
     determine_execution,
+    get_executed_hunters,
+    add_hunter_target_to_execution,
     determine_winner,
     get_winner_message,
     get_final_roles_message,
@@ -46,10 +48,12 @@ from game.logic import (
     is_night_phase_complete,
 )
 from game.llm_player import (
-    generate_llm_player_name,
+    get_next_llm_character,
+    reset_character_selection,
     llm_seer_action,
     llm_thief_action,
     llm_hunter_action,
+    llm_hunter_revenge_action,
     llm_vote,
     llm_generate_discussion_message,
     get_xai_api_key,
@@ -113,6 +117,7 @@ def reset_game_keep_players(game: GameState) -> None:
         player.night_action = None
         player.has_acted = False
         player.vote_target_id = None
+        player.my_statements.clear()  # 発言履歴をリセット
     
     # ゲーム状態をリセット
     game.phase = GamePhase.WAITING
@@ -122,6 +127,7 @@ def reset_game_keep_players(game: GameState) -> None:
     game.night_action_index = 0
     game.executed_player_ids.clear()
     game.winners.clear()
+    game.discussion_history.clear()  # 議論履歴をリセット
 
 
 async def send_role_dm(user: discord.User, player: Player) -> bool:
@@ -698,15 +704,26 @@ class OnenightCommands(app_commands.Group):
         # AIプレイヤーを追加
         existing_names = {p.username for p in game.player_list}
         added_names = []
-        
+
         for _ in range(count):
             # LLMプレイヤー用に負のIDを生成（重複しないように）
             llm_id = -1000 - game.llm_player_count - len(added_names)
-            name = generate_llm_player_name(existing_names)
+
+            # キャラクターを取得
+            character = get_next_llm_character(existing_names)
+            name = character["name"]
             existing_names.add(name)
-            
+
             game.add_player(llm_id, name, is_llm=True)
-            added_names.append(name)
+
+            # キャラクター設定を割り当て
+            player = game.get_player(llm_id)
+            if player:
+                player.personality = character["personality"]
+                player.speech_style = character["speech_style"]
+                player.emoji = character["emoji"]
+
+            added_names.append(f"{character['emoji']} {name}")
         
         player_names = ", ".join(p.username for p in game.player_list)
         
@@ -1401,126 +1418,9 @@ async def wait_for_thief_actions(game: GameState, thieves: list[Player]) -> None
 
 async def process_hunters(channel: discord.abc.Messageable, game: GameState) -> None:
     """狩人の夜行動を処理する。"""
-    hunters = game.get_players_by_initial_role(Role.HUNTER)
-    
-    if not hunters:
-        advance_night_phase(game)
-        return
-    
-    # LLMプレイヤーと人間プレイヤーを分離
-    human_hunters = [h for h in hunters if not h.is_llm]
-    llm_hunters = [h for h in hunters if h.is_llm]
-    
-    # 人間プレイヤーにDMを送信
-    for hunter in human_hunters:
-        user = bot.get_user(hunter.user_id)
-        if user is None:
-            try:
-                user = await bot.fetch_user(hunter.user_id)
-            except discord.NotFound:
-                continue
-        
-        try:
-            other_players = [
-                p for p in game.player_list 
-                if p.user_id != hunter.user_id
-            ]
-            
-            await user.send(
-                f"🏹 **狩人の行動**\n\n"
-                f"あなたが処刑された時、道連れにするプレイヤーを指名できます。\n\n"
-                f"以下のいずれかのコマンドをこのDMで入力してください：\n\n"
-                f"**道連れを指名する場合:**\n"
-                f"`!hunter プレイヤー名`\n"
-                f"（対象プレイヤー: {', '.join(p.username for p in other_players)}）\n\n"
-                f"**道連れを指名しない場合:**\n"
-                f"`!hunter skip`\n\n"
-                f"⏱️ {NIGHT_ACTION_TIMEOUT}秒以内に行動してください。"
-            )
-        except discord.Forbidden:
-            pass
-    
-    # LLMプレイヤーの行動を処理
-    async def process_llm_hunter(hunter: Player) -> None:
-        other_players = [p for p in game.player_list if p.user_id != hunter.user_id]
-        target_id = await llm_hunter_action(game, hunter, other_players)
-        process_hunter_action(game, hunter.user_id, target_id=target_id)
-    
-    llm_tasks = [process_llm_hunter(hunter) for hunter in llm_hunters]
-    
-    # 人間とLLMの処理を並列実行
-    if human_hunters:
-        await asyncio.gather(
-            wait_for_hunter_actions(game, human_hunters),
-            *llm_tasks
-        )
-    elif llm_tasks:
-        await asyncio.gather(*llm_tasks)
-    
+    # 狩人は夜フェーズでの行動なし（役職通知は begin コマンドで済み）
+    # 道連れ選択は処刑時に行う（process_hunter_revenge）
     advance_night_phase(game)
-
-
-async def wait_for_hunter_actions(game: GameState, hunters: list[Player]) -> None:
-    """狩人の行動入力を待つ。"""
-    
-    def check(message: discord.Message) -> bool:
-        if message.guild is not None:
-            return False
-        if message.author.id not in [h.user_id for h in hunters]:
-            return False
-        player = game.get_player(message.author.id)
-        if player is None or player.has_acted:
-            return False
-        return message.content.startswith("!hunter")
-    
-    pending_hunters = {h.user_id for h in hunters}
-    
-    while pending_hunters:
-        try:
-            message = await bot.wait_for("message", check=check)
-        except asyncio.CancelledError:
-            break
-        
-        hunter = game.get_player(message.author.id)
-        if hunter is None:
-            continue
-        
-        parts = message.content.split()
-        if len(parts) < 2:
-            await message.channel.send("⚠️ 無効なコマンドです。`!hunter プレイヤー名` または `!hunter skip` を使用してください。")
-            continue
-        
-        action = parts[1].lower()
-        
-        if action == "skip":
-            process_hunter_action(game, hunter.user_id, target_id=None)
-            await message.channel.send("🏹 道連れを指名しませんでした。")
-            pending_hunters.discard(hunter.user_id)
-        
-        else:
-            target_name = " ".join(parts[1:])
-            target = None
-            for p in game.player_list:
-                if p.username.lower() == target_name.lower() or target_name.lower() in p.username.lower():
-                    target = p
-                    break
-            
-            if target is None:
-                await message.channel.send(f"⚠️ プレイヤー '{target_name}' が見つかりません。")
-                continue
-            
-            if target.user_id == hunter.user_id:
-                await message.channel.send("⚠️ 自分自身は指名できません。")
-                continue
-            
-            if process_hunter_action(game, hunter.user_id, target_id=target.user_id):
-                await message.channel.send(
-                    f"🏹 **{target.username}** を道連れに指名しました。\n"
-                    f"あなたが処刑された場合、{target.username} も道連れになります。"
-                )
-                pending_hunters.discard(hunter.user_id)
-            else:
-                await message.channel.send("⚠️ 行動に失敗しました。")
 
 
 # =============================================================================
@@ -1530,17 +1430,22 @@ async def wait_for_hunter_actions(game: GameState, hunters: list[Player]) -> Non
 async def start_day_phase(channel: discord.abc.Messageable, game: GameState) -> None:
     """昼フェーズ（議論）を開始する。"""
     game.phase = GamePhase.DISCUSSION
-    
+
     await channel.send(
         f"☀️ **朝になりました！**\n\n"
         f"これから {DISCUSSION_TIME}秒間 、自由に議論してください。\n"
         f"誰が人狼か、話し合いましょう！\n\n"
         f"議論終了後、投票フェーズに移ります。"
     )
-    
+
+    # LLMプレイヤーの初回発言（順番に1回ずつ）と自動発言ループを開始
+    llm_players = game.get_llm_players()
+    if llm_players:
+        asyncio.create_task(initial_then_auto_speak(channel, game))
+
     # 議論時間を待つ
     await asyncio.sleep(DISCUSSION_TIME)
-    
+
     # 投票フェーズへ
     await start_voting_phase(channel, game)
 
@@ -1589,16 +1494,17 @@ async def process_llm_votes(
         target_id = await llm_vote(game, player, other_players)
         
         # 投票を登録
+        emoji = player.emoji or "🤖"
         if target_id == -1:
             player.vote_target_id = -1
             await channel.send(
-                f"🤖 {player.username} が投票しました。"
+                f"{emoji} {player.username} が投票しました。"
                 f"（{game.voted_count()}/{game.player_count}）"
             )
         else:
             if register_vote(game, player.user_id, target_id):
                 await channel.send(
-                    f"🤖 {player.username} が投票しました。"
+                    f"{emoji} {player.username} が投票しました。"
                     f"（{game.voted_count()}/{game.player_count}）"
                 )
         
@@ -1609,6 +1515,139 @@ async def process_llm_votes(
         
         # 次のLLMプレイヤーの投票前に少し待つ
         await asyncio.sleep(1)
+
+
+async def process_hunter_revenge(
+    channel: discord.abc.Messageable,
+    game: GameState,
+    executed_hunters: list[Player]
+) -> None:
+    """
+    処刑された狩人の道連れ処理を行う。
+
+    Args:
+        channel: 送信先チャンネル
+        game: ゲーム状態
+        executed_hunters: 処刑される狩人のリスト
+    """
+    import random
+
+    for hunter in executed_hunters:
+        # 道連れ対象候補（自分以外のプレイヤー）
+        candidates = [p for p in game.player_list if p.user_id != hunter.user_id]
+        if not candidates:
+            continue
+
+        candidate_names = ", ".join(p.username for p in candidates)
+
+        await channel.send(
+            f"🏹 **{hunter.username}** が処刑されます！\n\n"
+            f"狩人の能力で、誰かを道連れにできます。\n"
+            f"対象候補: {candidate_names}"
+        )
+
+        if hunter.is_llm:
+            # LLMプレイヤーの場合は自動決定
+            await asyncio.sleep(2)  # 自然な遅延
+            target = await llm_hunter_revenge(game, hunter, candidates)
+            if target:
+                add_hunter_target_to_execution(game, target.user_id)
+                await channel.send(
+                    f"🏹 **{hunter.username}** は **{target.username}** を道連れに選びました！"
+                )
+            else:
+                await channel.send(
+                    f"🏹 **{hunter.username}** は道連れを選びませんでした。"
+                )
+        else:
+            # 人間プレイヤーの場合はDMで選択
+            user = bot.get_user(hunter.user_id)
+            if user is None:
+                # ユーザーが見つからない場合はスキップ
+                await channel.send(
+                    f"⚠️ {hunter.username} のユーザーが見つかりません。道連れはスキップされます。"
+                )
+                continue
+
+            try:
+                dm_channel = await user.create_dm()
+                candidate_list = "\n".join(f"• {p.username}" for p in candidates)
+                await dm_channel.send(
+                    f"🏹 **あなたは処刑されます！**\n\n"
+                    f"狩人の能力で、誰かを道連れにできます。\n\n"
+                    f"**対象候補:**\n{candidate_list}\n\n"
+                    f"`!hunter <プレイヤー名>` で道連れを指名\n"
+                    f"`!hunter skip` でスキップ"
+                )
+
+                # 返答を待つ
+                def check(m: discord.Message) -> bool:
+                    return (
+                        m.author.id == hunter.user_id
+                        and m.channel == dm_channel
+                        and m.content.startswith("!hunter")
+                    )
+
+                response = await bot.wait_for(
+                    "message",
+                    check=check
+                )
+
+                content = response.content.lower()
+                if "skip" in content:
+                    await dm_channel.send("道連れをスキップしました。")
+                    await channel.send(
+                        f"🏹 **{hunter.username}** は道連れを選びませんでした。"
+                    )
+                else:
+                    # プレイヤー名を探す
+                    target = None
+                    for p in candidates:
+                        if p.username.lower() in response.content.lower():
+                            target = p
+                            break
+
+                    if target:
+                        add_hunter_target_to_execution(game, target.user_id)
+                        await dm_channel.send(f"**{target.username}** を道連れにしました！")
+                        await channel.send(
+                            f"🏹 **{hunter.username}** は **{target.username}** を道連れに選びました！"
+                        )
+                    else:
+                        await dm_channel.send(
+                            "⚠️ プレイヤー名が見つかりませんでした。道連れはスキップされます。"
+                        )
+                        await channel.send(
+                            f"🏹 **{hunter.username}** は道連れを選びませんでした。"
+                        )
+
+            except discord.Forbidden:
+                # DMが送れない場合はスキップ
+                await channel.send(
+                    f"⚠️ {hunter.username} にDMを送れません。道連れはスキップされます。"
+                )
+
+
+async def llm_hunter_revenge(
+    game: GameState,
+    hunter: Player,
+    candidates: list[Player]
+) -> Optional[Player]:
+    """
+    LLM狩人が道連れ対象を決定する。
+    議論内容や夜の情報を元に、最も人狼か大狼だと思うプレイヤーを選ぶ。
+
+    Returns:
+        道連れ対象（基本的に必ず誰かを選ぶ）
+    """
+    # 処刑時用の専用関数を使用（議論履歴・夜の情報を考慮）
+    target_id = await llm_hunter_revenge_action(game, hunter, candidates)
+
+    for p in candidates:
+        if p.user_id == target_id:
+            return p
+
+    return None
 
 
 async def end_voting_phase(channel: discord.abc.Messageable, game: GameState) -> None:
@@ -1651,19 +1690,25 @@ async def end_voting_phase(channel: discord.abc.Messageable, game: GameState) ->
         vote_summary_lines.append(f"• 🕊️ 平和村（処刑なし）: {peace_votes}票")
     
     vote_summary = "\n".join(vote_summary_lines) if vote_summary_lines else "（投票なし）"
-    
+
+    # 処刑対象を決定（狩人の道連れは含まない）
+    executed = determine_execution(game)
+
+    # 狩人が処刑対象に含まれている場合、道連れ処理（投票結果表示前に発動）
+    executed_hunters = get_executed_hunters(game)
+    if executed_hunters:
+        await process_hunter_revenge(channel, game, executed_hunters)
+
+    # 投票結果を表示（道連れ処理の後）
     await channel.send(
         f"📊 **投票結果**\n\n"
         f"**【投票内容】**\n{vote_details}\n\n"
         f"**【得票数】**\n{vote_summary}"
     )
-    
-    # 処刑対象を決定
-    executed = determine_execution(game)
-    
+
     # 処刑結果を表示
     await channel.send(get_execution_message(game))
-    
+
     # 勝敗を判定
     determine_winner(game)
     
@@ -1753,6 +1798,9 @@ async def on_message(message: discord.Message) -> None:
             # ゲーム参加者からのメッセージか確認
             sender = game.get_player(message.author.id)
             if sender is not None and not sender.is_llm:
+                # 議論履歴に追加
+                game.add_discussion_message(sender.username, message.content)
+                
                 # LLMプレイヤーに発言させる（非同期で実行）
                 asyncio.create_task(
                     trigger_llm_discussion(message.channel, game, message.content)
@@ -1765,6 +1813,118 @@ async def on_message(message: discord.Message) -> None:
 _last_llm_speak_time: dict[int, float] = {}
 # 次に発言するLLMプレイヤーのインデックス（順番管理）
 _next_llm_speaker_index: dict[int, int] = {}
+# 自発的発言の間隔（秒）
+AUTO_SPEAK_INTERVAL = 10
+
+
+async def initial_llm_statements(
+    channel: discord.abc.Messageable,
+    game: GameState
+) -> None:
+    """議論開始時に全LLMプレイヤーが順番に1回ずつ発言する。"""
+    import time
+    import random
+
+    llm_players = game.get_llm_players()
+    if not llm_players:
+        return
+
+    for speaker in llm_players:
+        # 議論フェーズでない場合は中断
+        if game.phase != GamePhase.DISCUSSION:
+            break
+
+        other_players = [p for p in game.player_list if p.user_id != speaker.user_id]
+
+        # 自然な遅延（2〜4秒）
+        await asyncio.sleep(random.uniform(2, 4))
+
+        # まだ議論フェーズか確認
+        if game.phase != GamePhase.DISCUSSION:
+            break
+
+        try:
+            response = await llm_generate_discussion_message(game, speaker, other_players, "")
+        except Exception as e:
+            print(f"LLM初回発言エラー ({speaker.username}): {e}")
+            continue
+
+        if response and game.phase == GamePhase.DISCUSSION:
+            _last_llm_speak_time[game.channel_id] = time.time()
+            game.add_discussion_message(speaker.username, response)
+            speaker.my_statements.append(response)
+            emoji = speaker.emoji or "🤖"
+            await channel.send(f"{emoji} **{speaker.username}**: {response}")
+
+
+async def initial_then_auto_speak(
+    channel: discord.abc.Messageable,
+    game: GameState
+) -> None:
+    """初回発言を実行し、完了後に自動発言ループを開始する。"""
+    await initial_llm_statements(channel, game)
+    await auto_llm_speak_loop(channel, game)
+
+
+async def auto_llm_speak_loop(
+    channel: discord.abc.Messageable,
+    game: GameState
+) -> None:
+    """一定間隔でLLMプレイヤーに自発的に発言させる。"""
+    import time
+    import random
+
+    while game.phase == GamePhase.DISCUSSION:
+        # 最後の発言からの経過時間をチェック
+        current_time = time.time()
+        last_time = _last_llm_speak_time.get(game.channel_id, 0)
+
+        # 人間の発言があった直後はスキップ（重複防止）
+        if current_time - last_time < 5:
+            await asyncio.sleep(5)
+            continue
+
+        llm_players = game.get_llm_players()
+        if not llm_players:
+            break
+
+        # 順番にLLMプレイヤーを選択
+        current_index = _next_llm_speaker_index.get(game.channel_id, 0)
+        if current_index >= len(llm_players):
+            current_index = 0
+        speaker = llm_players[current_index]
+        _next_llm_speaker_index[game.channel_id] = (current_index + 1) % len(llm_players)
+        other_players = [p for p in game.player_list if p.user_id != speaker.user_id]
+
+        # 自然な遅延
+        await asyncio.sleep(random.uniform(1, 3))
+
+        # まだ議論フェーズか確認
+        if game.phase != GamePhase.DISCUSSION:
+            break
+
+        # LLMに発言を生成させる
+        try:
+            response = await llm_generate_discussion_message(game, speaker, other_players, "")
+        except Exception as e:
+            print(f"LLM自発的発言エラー ({speaker.username}): {e}")
+            await asyncio.sleep(AUTO_SPEAK_INTERVAL)
+            continue
+
+        if response and game.phase == GamePhase.DISCUSSION:
+            _last_llm_speak_time[game.channel_id] = time.time()
+
+            # 議論履歴に追加
+            game.add_discussion_message(speaker.username, response)
+
+            # 自分の発言履歴に追加
+            speaker.my_statements.append(response)
+
+            emoji = speaker.emoji or "🤖"
+            await channel.send(f"{emoji} **{speaker.username}**: {response}")
+
+        # 次の自発的発言まで待つ
+        await asyncio.sleep(AUTO_SPEAK_INTERVAL)
 
 
 async def trigger_llm_discussion(
@@ -1811,11 +1971,23 @@ async def trigger_llm_discussion(
         return
     
     # LLMに発言を生成させる
-    response = await llm_generate_discussion_message(game, speaker, other_players, context)
-    
+    try:
+        response = await llm_generate_discussion_message(game, speaker, other_players, context)
+    except Exception as e:
+        print(f"LLM議論発言エラー ({speaker.username}): {e}")
+        return  # 静かに失敗（ゲーム継続）
+
     if response and game.phase == GamePhase.DISCUSSION:
         _last_llm_speak_time[game.channel_id] = time.time()
-        await channel.send(f"🤖 **{speaker.username}**: {response}")
+
+        # 議論履歴に追加
+        game.add_discussion_message(speaker.username, response)
+
+        # 自分の発言履歴に追加
+        speaker.my_statements.append(response)
+
+        emoji = speaker.emoji or "🤖"
+        await channel.send(f"{emoji} **{speaker.username}**: {response}")
 
 
 # =============================================================================

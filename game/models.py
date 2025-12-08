@@ -112,6 +112,10 @@ class Player:
     has_acted: bool = False                 # 夜の行動を完了したか
     vote_target_id: Optional[int] = None    # 投票先のUser ID
     is_llm: bool = False                    # LLMプレイヤーかどうか
+    my_statements: list[str] = field(default_factory=list)  # 自分の発言履歴（LLM用）
+    personality: Optional[str] = None       # 性格設定（LLM用）
+    speech_style: Optional[str] = None      # 口調設定（LLM用）
+    emoji: Optional[str] = None             # 絵文字（LLM用）
     
     @property
     def team(self) -> Team:
@@ -151,6 +155,9 @@ class GameState:
     
     # 勝敗結果
     winners: list[Team] = field(default_factory=list)
+    
+    # 議論履歴（投票判断に活用）
+    discussion_history: list[tuple[str, str]] = field(default_factory=list)  # (発言者名, 発言内容)
     
     @property
     def player_count(self) -> int:
@@ -237,7 +244,19 @@ class GameState:
         self.night_action_index = 0
         self.executed_player_ids.clear()
         self.winners.clear()
+        self.discussion_history.clear()  # 議論履歴もリセット
         self.started_at = datetime.now()
+    
+    def add_discussion_message(self, speaker_name: str, message: str) -> None:
+        """議論履歴にメッセージを追加する。"""
+        self.discussion_history.append((speaker_name, message))
+    
+    def get_discussion_history_text(self, limit: int = 20) -> str:
+        """議論履歴をテキスト形式で取得する（最新limit件）。"""
+        if not self.discussion_history:
+            return "（まだ発言がありません）"
+        recent = self.discussion_history[-limit:]
+        return "\n".join(f"{name}: {msg}" for name, msg in recent)
     
     def get_llm_players(self) -> list[Player]:
         """LLMプレイヤーのリストを返す。"""

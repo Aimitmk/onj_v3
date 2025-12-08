@@ -23,12 +23,11 @@ from game.models import (
 # 夜の行動順序
 # =============================================================================
 # ワンナイト人狼の標準的な行動順序
-# 人狼 → 占い師 → 怪盗 → 狩人 の順
+# 人狼 → 占い師 → 怪盗 の順（狩人は処刑時に道連れを選ぶ）
 NIGHT_ACTION_ORDER: list[Role] = [
     Role.WEREWOLF,
     Role.SEER,
     Role.THIEF,
-    Role.HUNTER,
 ]
 
 
@@ -465,62 +464,79 @@ def calculate_votes(state: GameState) -> dict[int, int]:
 
 def determine_execution(state: GameState) -> list[int]:
     """
-    処刑対象を決定する。
-    
+    処刑対象を決定する（狩人の道連れは含まない）。
+
     最多得票者を処刑する。同票の場合は全員処刑（両吊り）。
     平和村（-1）が最多得票に含まれる場合は、平和村を除いた同票者を処刑。
-    狩人が処刑された場合、道連れ対象も処刑される。
-    
+
+    ※ 狩人の道連れは別途 add_hunter_target_to_execution() で追加する
+
     Returns:
         処刑されるプレイヤーのUser IDリスト（0人以上）
     """
     vote_counts = calculate_votes(state)
-    
+
     if not vote_counts:
         return []
-    
+
     max_votes = max(vote_counts.values())
-    
+
     if max_votes == 0:
         return []
-    
+
     # 最多得票者を取得
     max_voted = [uid for uid, count in vote_counts.items() if count == max_votes]
-    
+
     # 平和村（-1）を除外
     max_voted_players = [uid for uid in max_voted if uid != -1]
-    
+
     # 平和村のみが最多得票の場合は誰も処刑しない
     if not max_voted_players:
         state.executed_player_ids = []
         return []
-    
+
     # 同票でも全員処刑（両吊り）
     executed = list(max_voted_players)
-    
-    # 狩人の道連れ処理
-    for uid in max_voted_players:
-        player = state.get_player(uid)
-        if player is None:
-            continue
-        
-        # 現在の役職が狩人の場合（怪盗で役職が変わった可能性も考慮）
-        if player.current_role == Role.HUNTER:
-            # 初期役職が狩人だったプレイヤーの道連れ対象を取得
-            # （怪盗が狩人になった場合は道連れ対象を指名していない）
-            original_hunter = None
-            for p in state.players.values():
-                if p.initial_role == Role.HUNTER:
-                    original_hunter = p
-                    break
-            
-            if original_hunter:
-                target_id = get_hunter_target(state, original_hunter.user_id)
-                if target_id is not None and target_id not in executed:
-                    executed.append(target_id)
-    
+
     state.executed_player_ids = executed
     return executed
+
+
+def get_executed_hunters(state: GameState) -> list[Player]:
+    """
+    処刑対象に含まれる狩人（現在の役職が狩人）を取得する。
+
+    Returns:
+        処刑対象の狩人のリスト
+    """
+    hunters = []
+    for uid in state.executed_player_ids:
+        player = state.get_player(uid)
+        if player and player.current_role == Role.HUNTER:
+            hunters.append(player)
+    return hunters
+
+
+def add_hunter_target_to_execution(state: GameState, target_id: int) -> bool:
+    """
+    狩人の道連れ対象を処刑リストに追加する。
+
+    Args:
+        state: ゲーム状態
+        target_id: 道連れ対象のUser ID
+
+    Returns:
+        追加に成功した場合True
+    """
+    if target_id in state.executed_player_ids:
+        return False  # 既に処刑リストに含まれている
+
+    target = state.get_player(target_id)
+    if target is None:
+        return False
+
+    state.executed_player_ids.append(target_id)
+    return True
 
 
 # =============================================================================

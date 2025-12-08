@@ -12,7 +12,8 @@ from game.logic import (
     determine_winner,
 )
 from game.llm_player import (
-    generate_llm_player_name,
+    get_next_llm_character,
+    reset_character_selection,
     llm_seer_action,
     llm_thief_action,
     llm_hunter_action,
@@ -35,7 +36,8 @@ __all__ = [
     "calculate_votes",
     "determine_winner",
     # LLM Player
-    "generate_llm_player_name",
+    "get_next_llm_character",
+    "reset_character_selection",
     "llm_seer_action",
     "llm_thief_action",
     "llm_hunter_action",
