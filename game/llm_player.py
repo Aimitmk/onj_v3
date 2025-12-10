@@ -5,6 +5,7 @@ Grok 4.1 Fast APIを使用してAIプレイヤーを実装する。
 人数が足りない場合にLLMプレイヤーで補完できる。
 """
 
+import json
 import os
 import random
 import asyncio
@@ -36,6 +37,30 @@ def load_rules_md() -> str:
     return ""
 
 
+def load_characters() -> list[dict]:
+    """characters.jsonファイルを読み込む。"""
+    characters_path = Path(__file__).parent / "characters.json"
+    if characters_path.exists():
+        with open(characters_path, "r", encoding="utf-8") as f:
+            characters = json.load(f)
+        # バリデーション
+        required_fields = {"name", "emoji", "personality", "speech_style"}
+        for i, char in enumerate(characters):
+            missing = required_fields - set(char.keys())
+            if missing:
+                raise ValueError(f"Character {i} is missing required fields: {missing}")
+        return characters
+    # フォールバック（ファイルがない場合）
+    return [
+        {
+            "name": "AI",
+            "emoji": "🤖",
+            "personality": "標準的なプレイヤー。",
+            "speech_style": "です・ます調。"
+        }
+    ]
+
+
 # =============================================================================
 # 設定
 # =============================================================================
@@ -50,51 +75,8 @@ XAI_MODEL = os.getenv("XAI_MODEL", "grok-4-1-fast-reasoning")
 API_CALL_INTERVAL = 1.0  # 最小呼び出し間隔（秒）
 _last_api_call_time: float = 0
 
-# 7種類のLLMキャラクター（名前、性格、口調、絵文字）
-LLM_CHARACTERS = [
-    {
-        "name": "アリス",
-        "emoji": "🎀",
-        "personality": "明るくポジティブ。みんなを励ます。",
-        "speech_style": "です・ます調。「〜だね！」「がんばろう！」"
-    },
-    {
-        "name": "ボブ",
-        "emoji": "🧢",
-        "personality": "冷静で論理的。データを重視する。",
-        "speech_style": "淡々とした口調。「〜だと思う」「論理的に考えると〜」"
-    },
-    {
-        "name": "チャーリー",
-        "emoji": "🕵️",
-        "personality": "疑り深い。誰も信用しない。",
-        "speech_style": "疑問形が多い。「本当に？」「怪しいな〜」"
-    },
-    {
-        "name": "ダイアナ",
-        "emoji": "👑",
-        "personality": "自信家でリーダー気質。",
-        "speech_style": "断定的。「間違いない」「私について来て」"
-    },
-    {
-        "name": "エミリー",
-        "emoji": "🌸",
-        "personality": "優しくて協調的。争いを避ける。",
-        "speech_style": "柔らかい口調。「〜かな？」「みんなはどう思う？」"
-    },
-    {
-        "name": "フランク",
-        "emoji": "🔥",
-        "personality": "熱血で直感的。勢いで行動。",
-        "speech_style": "熱い口調。「絶対〜だ！」「行くぞ！」"
-    },
-    {
-        "name": "グレース",
-        "emoji": "🔮",
-        "personality": "神秘的で洞察力がある。",
-        "speech_style": "含みのある言い方。「〜かもしれないわね」「見えるわ〜」"
-    },
-]
+# LLMキャラクター（characters.jsonから読み込み）
+LLM_CHARACTERS = load_characters()
 
 # 使用済みキャラクターのインデックス（ゲーム内で重複しないように）
 _used_character_indices: set[int] = set()

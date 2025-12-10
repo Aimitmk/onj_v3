@@ -36,12 +36,14 @@ Copy `.env.example` to `.env` and set:
 ## Architecture
 
 ```
-bot.py          # Discord integration: slash commands, DMs, UI components, game state management
-config.py       # Game constants, role configs, message templates
+bot.py            # Discord integration: slash commands, DMs, UI components, game state management
+config.py         # Game constants, role configs, message templates
 game/
-  models.py     # Data structures: Role, Team, GamePhase, Player, GameState, NightAction
-  logic.py      # Pure game logic with no Discord dependencies (testable)
-  llm_player.py # LLM player implementation using Grok API
+  models.py       # Data structures: Role, Team, GamePhase, Player, GameState, NightAction
+  logic.py        # Pure game logic with no Discord dependencies (testable)
+  llm_player.py   # LLM player implementation using Grok API
+  characters.json # LLM character definitions (name, emoji, personality, speech_style)
+  rules.md        # Game rules documentation (used in LLM system prompts)
 ```
 
 ### Key Design Pattern
@@ -53,6 +55,17 @@ game/
 - In-memory dictionary: `games: dict[int, GameState]` maps channel ID to active game
 - One game per channel
 - Ephemeral state (lost on bot restart)
+
+### Key Data Model Fields (game/models.py)
+
+**Player**:
+- `initial_role` vs `current_role` - Critical distinction for Thief swap logic. Night actions use `initial_role`, win conditions use `current_role`
+- `is_llm` - Boolean flag identifying AI players (use negative user_id to avoid Discord ID collisions)
+- `has_acted` - Tracks night action completion
+
+**GameState**:
+- `discussion_history: list[tuple[str, str]]` - (speaker_name, message) pairs for LLM context
+- `executed_player_ids` - Includes both vote-executed and hunter-dragged players
 
 ### Key Constants (config.py)
 
@@ -72,9 +85,35 @@ game/
 
 Defined in `game/logic.py`:
 ```python
-NIGHT_ACTION_ORDER = [Role.WEREWOLF, Role.SEER, Role.THIEF, Role.HUNTER]
+NIGHT_ACTION_ORDER = [Role.WEREWOLF, Role.SEER, Role.THIEF]
 ```
-Note: Hunter designates a revenge target at night, but execution happens during voting phase if Hunter is killed.
+Note: Hunter designates a revenge target at night via DM, but the revenge execution happens during voting phase only if Hunter is killed.
+
+### Key Logic Functions (game/logic.py)
+
+**Game Setup**:
+- `setup_game(state, role_list)` - Shuffle and distribute roles, initialize night phase
+
+**Night Actions**:
+- `process_werewolf_night(state)` - Wolves see each other; Alpha Wolf also sees center cards
+- `process_seer_action_player(state, seer_id, target_id)` - See player's current role
+- `process_seer_action_center(state, seer_id)` - See both center cards
+- `process_thief_action(state, thief_id, target_id)` - Swap cards (updates both players' `current_role`)
+- `process_hunter_action(state, hunter_id, target_id)` - Record revenge target
+
+**Voting & Execution**:
+- `calculate_votes(state)` - Mayor has 2 votes; returns `{user_id: count}`, `-1` = peace village
+- `determine_execution(state)` - Highest votes executed; ties = both executed
+- `add_hunter_target_to_execution(state, target_id)` - Add revenge kill to execution list
+
+**Win Conditions** (`determine_winner`):
+1. Tanner executed → **Tanner wins** (exclusive, highest priority)
+2. Wolf executed → **Village wins**
+3. Wolf not executed → **Wolf wins**
+4. Peace village (no wolves in game):
+   - No execution → Everyone wins
+   - Someone executed → Executed player "wins" (special case)
+   - Madman becomes Village team if no wolves exist
 
 ## Discord Commands
 
@@ -99,6 +138,7 @@ Note: Hunter designates a revenge target at night, but execution happens during 
 - 狩人 (Hunter) revenge kills on execution
 - 怪盗 (Thief) swaps cards and takes new role
 - Win conditions in `game/logic.py:determine_winner()`
+- Full rules documentation: `game/rules.md`
 
 ## LLM Player Feature
 
@@ -107,14 +147,20 @@ AIプレイヤーは xAI Grok API を使用:
 - `XAI_MODEL` でモデル指定可能（デフォルト: grok-4-1-fast-reasoning）
 - API rate limit: 1 call/second (`API_CALL_INTERVAL` in llm_player.py)
 
-**Implementation details**:
-- LLMプレイヤーは `is_llm=True` フラグで識別
-- 負のUser IDを使用（Discord IDと衝突しない）
-- 7 character personalities (Alice, Bob, Charlie, Diana, Emily, Frank, Grace)
-- `get_perceived_role()` returns what LLM believes its role is (differs after Thief swap)
-- Discussion history: `GameState.discussion_history: list[tuple[str, str]]`
+**Character System** (`game/characters.json`):
+- 7 unique personalities: アリス, ボブ, チャーリー, ダイアナ, エミリー, フランク, グレース
+- Each character has: `name`, `emoji`, `personality`, `speech_style`
+- Characters are not reused within a single game
+- Edit `characters.json` to add/modify characters (all 4 fields required)
 
-**Phases**:
-- 夜フェーズ: 役職に応じた行動を自動実行
-- 議論フェーズ: 初回発言 + 自動発言ループ + 名指し時に反応発言
-- 投票フェーズ: 役職と得た情報に基づいて投票
+**Key Functions** (game/llm_player.py):
+- `get_perceived_role(player)` - Returns what LLM believes its role is (differs after being Thief-swapped)
+- `llm_seer_action()`, `llm_thief_action()`, `llm_hunter_action()` - Night action decisions
+- `llm_generate_discussion_message()` - In-character discussion statements
+- `llm_vote()` - Voting decision based on role and gathered information
+
+**Discussion Phase Behavior**:
+- Initial statement when discussion starts
+- Auto-generated follow-up statements in rotation
+- Reaction statements when specifically mentioned by name
+- Context: Last 15 discussion messages + own last 3 statements
