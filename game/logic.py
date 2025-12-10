@@ -558,40 +558,39 @@ def has_wolves_in_game(state: GameState) -> bool:
 def determine_winner(state: GameState) -> list[Team]:
     """
     勝者を決定する。
-    
+
     勝敗判定ルール:
     1. 吊り人が処刑された場合 → 吊り人のみ勝利
     2. 人狼/大狼が1人以上処刑された場合 → 村人陣営勝利
     3. それ以外（人狼/大狼が処刑されなかった場合）→ 人狼陣営勝利
-    
-    特殊ケース:
-    - 誰も処刑されなかった場合:
-      - 場に人狼/大狼がいる → 人狼陣営勝利
-      - 場に人狼/大狼がいない（平和村）→ 村人陣営勝利（狂人も村人陣営として勝利）
-    
-    狂人の特殊ルール:
-    - 場に人狼がいない場合、狂人は村人陣営として扱われる
-    
+
+    特殊ケース（平和村: 場に人狼/大狼がいない）:
+    - 誰も処刑されなかった場合 → 全員勝利
+    - 誰かが処刑された場合 → 処刑された人の勝利
+
+    通常ケース（人狼がいる場合）:
+    - 誰も処刑されなかった場合 → 人狼陣営勝利
+
     Returns:
         勝者の陣営リスト
     """
     executed_ids = state.executed_player_ids
-    
+
     # 処刑されたプレイヤーの情報を取得
     executed_players = [state.get_player(uid) for uid in executed_ids]
     executed_players = [p for p in executed_players if p is not None]
-    
+
     # 処刑されたプレイヤーの最終役職を取得
     executed_roles = [p.current_role for p in executed_players]
-    
+
     # 1. 吊り人が処刑された場合 → 吊り人のみ勝利
     if Role.TANNER in executed_roles:
         state.winners = [Team.TANNER]
         return [Team.TANNER]
-    
-    # 場に人狼がいるかチェック（狂人の勝敗判定に使用）
+
+    # 場に人狼がいるかチェック
     wolves_exist = has_wolves_in_game(state)
-    
+
     # 誰も処刑されなかった場合の特殊処理
     if not executed_ids:
         if wolves_exist:
@@ -599,43 +598,56 @@ def determine_winner(state: GameState) -> list[Team]:
             state.winners = [Team.WEREWOLF]
             return [Team.WEREWOLF]
         else:
-            # 人狼がいない（平和村）→ 村人勝利（狂人も村人陣営として勝利）
-            state.winners = [Team.VILLAGE]
-            return [Team.VILLAGE]
-    
+            # 平和村で誰も処刑されない → 全員勝利
+            state.winners = [Team.VILLAGE, Team.WEREWOLF, Team.TANNER]
+            return [Team.VILLAGE, Team.WEREWOLF, Team.TANNER]
+
     # 2. 人狼/大狼が処刑された場合 → 村人陣営勝利
     if any(is_wolf_role(role) for role in executed_roles):
         state.winners = [Team.VILLAGE]
         return [Team.VILLAGE]
-    
+
     # 3. 人狼/大狼が処刑されなかった場合
     if wolves_exist:
         # 人狼がいる → 人狼陣営勝利
         state.winners = [Team.WEREWOLF]
         return [Team.WEREWOLF]
     else:
-        # 人狼がいない（平和村）→ 村人陣営勝利（狂人も村人陣営として勝利）
-        state.winners = [Team.VILLAGE]
-        return [Team.VILLAGE]
+        # 平和村で誰かが処刑された → 処刑された人の勝利
+        state.winners = [Team.TANNER]  # 特殊勝利として吊り人陣営を使用
+        return [Team.TANNER]
 
 
 def get_winner_message(state: GameState) -> str:
     """勝者メッセージを生成する。"""
     winners = state.winners
-    
+
     if not winners:
         return "勝者なし"
-    
-    if Team.TANNER in winners:
-        # 吊り人が勝った場合、吊り人プレイヤーを特定
+
+    # 平和村で全員勝利（全陣営が勝者）
+    if len(winners) == 3 and Team.VILLAGE in winners and Team.WEREWOLF in winners and Team.TANNER in winners:
+        return "🎉 **全員の勝利！** 人狼がいない平和村で誰も処刑されませんでした！"
+
+    # 平和村で処刑者勝利（吊り人陣営のみだが、吊り人が処刑されていない）
+    if winners == [Team.TANNER]:
+        wolves_exist = has_wolves_in_game(state)
+        if not wolves_exist:
+            # 平和村で誰かが処刑された → 処刑された人の勝利
+            executed_players = [state.get_player(uid) for uid in state.executed_player_ids]
+            executed_players = [p for p in executed_players if p is not None]
+            if executed_players:
+                names = "、".join(p.username for p in executed_players)
+                return f"🎯 **{names} の勝利！** 人狼がいない平和村で処刑されました！"
+        # 通常の吊り人勝利（吊り人が処刑された場合）
         tanner_players = [
-            p for p in state.players.values() 
+            p for p in state.players.values()
             if p.current_role == Role.TANNER and p.user_id in state.executed_player_ids
         ]
         if tanner_players:
             return f"🎭 **吊り人（{tanner_players[0].username}）の単独勝利！**"
         return "🎭 **吊り人陣営の勝利！**"
-    
+
     if Team.VILLAGE in winners:
         # 人狼がいるかチェック（平和村判定）
         wolves_exist = has_wolves_in_game(state)
@@ -646,10 +658,10 @@ def get_winner_message(state: GameState) -> str:
                 return "🏘️ **村人陣営の勝利！** 人狼がいない平和村でした！\n🤪 狂人も村人陣営として勝利！"
             return "🏘️ **村人陣営の勝利！** 人狼がいない平和村でした！"
         return "🏘️ **村人陣営の勝利！** 人狼を処刑しました！"
-    
+
     if Team.WEREWOLF in winners:
         return "🐺 **人狼陣営の勝利！** 人狼は処刑を免れました！"
-    
+
     return "結果不明"
 
 

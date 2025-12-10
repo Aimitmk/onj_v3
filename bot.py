@@ -23,9 +23,7 @@ from config import (
     CENTER_CARD_COUNT,
     MESSAGES,
     ROLE_DESCRIPTIONS,
-    NIGHT_ACTION_TIMEOUT,
     DISCUSSION_TIME,
-    VOTE_TIMEOUT,
 )
 from game.models import Role, GamePhase, GameState, Player
 from game.logic import (
@@ -484,6 +482,13 @@ class OnenightCommands(app_commands.Group):
         
         # 自分以外のゲーム参加者をフィルタリング
         choices = []
+
+        # 平和村オプションを最初に追加
+        if "平和" in current.lower() or current == "":
+            choices.append(
+                app_commands.Choice(name="平和村", value="-1")
+            )
+
         for player in game.player_list:
             if player.user_id == interaction.user.id:
                 continue  # 自分自身は除外
@@ -491,7 +496,7 @@ class OnenightCommands(app_commands.Group):
                 choices.append(
                     app_commands.Choice(name=player.username, value=str(player.user_id))
                 )
-        
+
         return choices[:25]  # Discord の上限は25件
     
     @app_commands.command(name="vote", description="プレイヤーに投票する")
@@ -528,7 +533,18 @@ class OnenightCommands(app_commands.Group):
                 ephemeral=True
             )
             return
-        
+
+        # 平和村投票の処理
+        if player == "-1":
+            voter.vote_target_id = -1
+            await interaction.response.send_message(
+                f"✅ {interaction.user.display_name} さんが投票しました。"
+                f"（{game.voted_count()}/{game.player_count}）"
+            )
+            if game.all_voted():
+                await end_voting_phase(interaction.channel, game)
+            return
+
         # player はユーザーIDの文字列
         try:
             target_id = int(player)
@@ -577,52 +593,7 @@ class OnenightCommands(app_commands.Group):
         # 全員投票完了したら結果発表
         if game.all_voted():
             await end_voting_phase(interaction.channel, game)
-    
-    @app_commands.command(name="skip", description="誰も処刑しない（平和村）に投票する")
-    async def skip(self, interaction: discord.Interaction) -> None:
-        """平和村（誰も処刑しない）に投票する。"""
-        channel_id = interaction.channel_id
-        
-        if channel_id is None:
-            await interaction.response.send_message("このチャンネルでは使用できません。", ephemeral=True)
-            return
-        
-        game = get_game(channel_id)
-        
-        if game is None or game.phase != GamePhase.VOTING:
-            await interaction.response.send_message(
-                MESSAGES["wrong_phase"],
-                ephemeral=True
-            )
-            return
-        
-        voter = game.get_player(interaction.user.id)
-        if voter is None:
-            await interaction.response.send_message(
-                MESSAGES["not_in_game"],
-                ephemeral=True
-            )
-            return
-        
-        if voter.vote_target_id is not None:
-            await interaction.response.send_message(
-                MESSAGES["already_voted"],
-                ephemeral=True
-            )
-            return
-        
-        # 平和村投票は vote_target_id を -1 に設定
-        voter.vote_target_id = -1
-        
-        await interaction.response.send_message(
-            f"✅ {interaction.user.display_name} さんが投票しました。"
-            f"（{game.voted_count()}/{game.player_count}）"
-        )
-        
-        # 全員投票完了したら結果発表
-        if game.all_voted():
-            await end_voting_phase(interaction.channel, game)
-    
+
     @app_commands.command(name="cancel", description="ゲームをキャンセルする（ホストのみ）")
     async def cancel(self, interaction: discord.Interaction) -> None:
         """ゲームをキャンセルする。"""
@@ -811,8 +782,7 @@ class OnenightCommands(app_commands.Group):
 `/onj players` - 参加者一覧を表示
 `/onj roles` - 役職構成を変更（ホストのみ）
 `/onj begin` - ゲームを開始（ホストのみ）
-`/onj vote <プレイヤー>` - プレイヤーに投票
-`/onj skip` - 平和村（誰も処刑しない）に投票
+`/onj vote <プレイヤー>` - プレイヤーに投票（平和村も選択可）
 `/onj cancel` - ゲームをキャンセル（ホストのみ）
 `/onj add_bot [人数]` - AIプレイヤーを追加（ホストのみ）
 `/onj remove_bot [人数]` - AIプレイヤーを削除（ホストのみ）
@@ -1191,8 +1161,7 @@ async def process_seers(channel: discord.abc.Messageable, game: GameState) -> No
                 f"`!seer player プレイヤー名`\n"
                 f"（対象プレイヤー: {', '.join(p.username for p in other_players)}）\n\n"
                 f"**中央カード2枚を見る場合:**\n"
-                f"`!seer center`\n\n"
-                f"⏱️ {NIGHT_ACTION_TIMEOUT}秒以内に行動してください。"
+                f"`!seer center`"
             )
         except discord.Forbidden:
             pass
@@ -1326,8 +1295,7 @@ async def process_thieves(channel: discord.abc.Messageable, game: GameState) -> 
                 f"`!thief プレイヤー名`\n"
                 f"（対象プレイヤー: {', '.join(p.username for p in other_players)}）\n\n"
                 f"**何もしない場合:**\n"
-                f"`!thief skip`\n\n"
-                f"⏱️ {NIGHT_ACTION_TIMEOUT}秒以内に行動してください。"
+                f"`!thief skip`"
             )
         except discord.Forbidden:
             pass
@@ -1458,8 +1426,8 @@ async def start_voting_phase(channel: discord.abc.Messageable, game: GameState) 
     
     await channel.send(
         f"🗳️ **投票フェーズです！**\n\n"
-        f"`/onj vote @プレイヤー` で投票してください。\n"
-        f"`/onj skip` で **平和村**（誰も処刑しない）に投票できます。\n"
+        f"`/onj vote` で投票してください。\n"
+        f"投票先で「平和村」を選ぶと誰も処刑しない投票ができます。\n"
         f"※自分以外のプレイヤーに投票できます。\n\n"
         f"**参加者:**\n{player_list}\n\n"
         f"全員の投票が完了すると結果が発表されます。"
@@ -1800,21 +1768,34 @@ async def on_message(message: discord.Message) -> None:
             if sender is not None and not sender.is_llm:
                 # 議論履歴に追加
                 game.add_discussion_message(sender.username, message.content)
-                
-                # LLMプレイヤーに発言させる（非同期で実行）
-                asyncio.create_task(
-                    trigger_llm_discussion(message.channel, game, message.content)
-                )
+
+                # 名指しされたLLMプレイヤーがいれば発言させる
+                mentioned_llm = find_mentioned_llm(game, message.content)
+                if mentioned_llm:
+                    asyncio.create_task(
+                        trigger_llm_discussion_for_player(
+                            message.channel, game, message.content, mentioned_llm
+                        )
+                    )
     
     await bot.process_commands(message)
 
 
 # 最後にLLMが発言した時間を記録（連続発言防止）
 _last_llm_speak_time: dict[int, float] = {}
-# 次に発言するLLMプレイヤーのインデックス（順番管理）
+# 次に発言するLLMプレイヤーのインデックス（自動発言ループ用）
 _next_llm_speaker_index: dict[int, int] = {}
 # 自発的発言の間隔（秒）
-AUTO_SPEAK_INTERVAL = 10
+AUTO_SPEAK_INTERVAL = 5
+
+
+def find_mentioned_llm(game: GameState, content: str) -> Optional[Player]:
+    """メッセージ内で名指しされたLLMプレイヤーを検出する。"""
+    llm_players = game.get_llm_players()
+    for player in llm_players:
+        if player.username in content:
+            return player
+    return None
 
 
 async def initial_llm_statements(
@@ -1927,49 +1908,36 @@ async def auto_llm_speak_loop(
         await asyncio.sleep(AUTO_SPEAK_INTERVAL)
 
 
-async def trigger_llm_discussion(
+async def trigger_llm_discussion_for_player(
     channel: discord.abc.Messageable,
     game: GameState,
-    context: str
+    context: str,
+    speaker: Player
 ) -> None:
-    """LLMプレイヤーに議論で発言させる（順番に発言）。"""
+    """特定のLLMプレイヤーに議論で発言させる（名指しされた場合）。"""
     import time
     import random
-    
+
     # 連続発言を防ぐため、最低3秒間隔を空ける
     current_time = time.time()
     last_time = _last_llm_speak_time.get(game.channel_id, 0)
     if current_time - last_time < 3:
         return
-    
+
     # 議論フェーズでない場合は何もしない
     if game.phase != GamePhase.DISCUSSION:
         return
-    
-    llm_players = game.get_llm_players()
-    if not llm_players:
-        return
-    
-    # 順番に発言するLLMプレイヤーを選ぶ
-    current_index = _next_llm_speaker_index.get(game.channel_id, 0)
-    if current_index >= len(llm_players):
-        current_index = 0
-    
-    speaker = llm_players[current_index]
-    
-    # 次の発言者インデックスを更新
-    _next_llm_speaker_index[game.channel_id] = (current_index + 1) % len(llm_players)
-    
+
     # 他のプレイヤー
     other_players = [p for p in game.player_list if p.user_id != speaker.user_id]
-    
+
     # 少し待ってから発言（自然な遅延）
     await asyncio.sleep(random.uniform(2, 4))
-    
+
     # まだ議論フェーズか確認
     if game.phase != GamePhase.DISCUSSION:
         return
-    
+
     # LLMに発言を生成させる
     try:
         response = await llm_generate_discussion_message(game, speaker, other_players, context)

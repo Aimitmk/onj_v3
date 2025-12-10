@@ -12,7 +12,9 @@ LLMプレイヤー機能により、人数が足りない場合でもAIプレイ
 ```bash
 # Setup
 uv venv .venv
-source .venv/bin/activate  # macOS/Linux
+source .venv/bin/activate       # macOS/Linux
+.venv\Scripts\activate.bat      # Windows
+
 uv pip install discord.py python-dotenv httpx
 
 # Run the bot
@@ -24,7 +26,12 @@ python bot.py
 Copy `.env.example` to `.env` and set:
 - `DISCORD_TOKEN` - Bot token from Discord Developer Portal
 - `GUILD_ID` - (Optional) Server ID for instant command sync
-- `XAI_API_KEY` - (Optional) xAI API key for LLM players (Grok 4.1 Fast)
+- `XAI_API_KEY` - (Optional) xAI API key for LLM players
+- `XAI_MODEL` - (Optional) Model name (default: `grok-4-1-fast-reasoning`)
+
+**Discord Bot Requirements**: Enable these Privileged Gateway Intents in Developer Portal:
+- SERVER MEMBERS INTENT
+- MESSAGE CONTENT INTENT
 
 ## Architecture
 
@@ -34,7 +41,7 @@ config.py       # Game constants, role configs, message templates
 game/
   models.py     # Data structures: Role, Team, GamePhase, Player, GameState, NightAction
   logic.py      # Pure game logic with no Discord dependencies (testable)
-  llm_player.py # LLM player implementation using Grok 4.1 Fast API
+  llm_player.py # LLM player implementation using Grok API
 ```
 
 ### Key Design Pattern
@@ -46,6 +53,12 @@ game/
 - In-memory dictionary: `games: dict[int, GameState]` maps channel ID to active game
 - One game per channel
 - Ephemeral state (lost on bot restart)
+
+### Key Constants (config.py)
+
+- `MIN_PLAYERS=3`, `MAX_PLAYERS=8`
+- `DISCUSSION_TIME=180` (seconds) - 議論フェーズのみタイムアウトあり
+- Role card constraint: `total_cards == player_count + 2` (always 2 center cards)
 
 ### Game Flow
 
@@ -61,6 +74,7 @@ Defined in `game/logic.py`:
 ```python
 NIGHT_ACTION_ORDER = [Role.WEREWOLF, Role.SEER, Role.THIEF, Role.HUNTER]
 ```
+Note: Hunter designates a revenge target at night, but execution happens during voting phase if Hunter is killed.
 
 ## Discord Commands
 
@@ -69,7 +83,7 @@ NIGHT_ACTION_ORDER = [Role.WEREWOLF, Role.SEER, Role.THIEF, Role.HUNTER]
 - `roles` - Customize role composition (host only)
 - `add_bot [count]`, `remove_bot [count]` - Add/remove AI players (host only)
 - `begin` - Start game (host only)
-- `vote @player`, `skip` - Voting phase
+- `vote` - Voting phase (includes peace village option)
 - `cancel` - Cancel game (host only)
 
 **DM commands** (night phase):
@@ -88,12 +102,19 @@ NIGHT_ACTION_ORDER = [Role.WEREWOLF, Role.SEER, Role.THIEF, Role.HUNTER]
 
 ## LLM Player Feature
 
-AIプレイヤーは xAI Grok 4.1 Fast Reasoning を使用:
+AIプレイヤーは xAI Grok API を使用:
 - `XAI_API_KEY` 環境変数が必要
 - `XAI_MODEL` でモデル指定可能（デフォルト: grok-4-1-fast-reasoning）
-  - 利用可能: grok-4-1-fast-reasoning, grok-4-1-fast-non-reasoning
+- API rate limit: 1 call/second (`API_CALL_INTERVAL` in llm_player.py)
+
+**Implementation details**:
 - LLMプレイヤーは `is_llm=True` フラグで識別
 - 負のUser IDを使用（Discord IDと衝突しない）
+- 7 character personalities (Alice, Bob, Charlie, Diana, Emily, Frank, Grace)
+- `get_perceived_role()` returns what LLM believes its role is (differs after Thief swap)
+- Discussion history: `GameState.discussion_history: list[tuple[str, str]]`
+
+**Phases**:
 - 夜フェーズ: 役職に応じた行動を自動実行
+- 議論フェーズ: 初回発言 + 自動発言ループ + 名指し時に反応発言
 - 投票フェーズ: 役職と得た情報に基づいて投票
-- 議論フェーズ: 人間の発言に反応して順番に発言
