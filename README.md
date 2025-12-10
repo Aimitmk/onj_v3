@@ -180,8 +180,7 @@ python bot.py
 | `/onj add_bot [人数]` | AIプレイヤーを追加する（ホストのみ） |
 | `/onj remove_bot [人数]` | AIプレイヤーを削除する（ホストのみ） |
 | `/onj begin` | ゲームを開始する（ホストのみ） |
-| `/onj vote @player` | プレイヤーに投票する |
-| `/onj skip` | 平和村（誰も処刑しない）に投票する |
+| `/onj vote @player` | プレイヤーに投票する（平和村も選択可） |
 | `/onj cancel` | ゲームをキャンセルする（ホストのみ） |
 | `/onj help` | ヘルプを表示する |
 
