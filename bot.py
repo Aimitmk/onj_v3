@@ -1786,7 +1786,7 @@ _last_llm_speak_time: dict[int, float] = {}
 # 次に発言するLLMプレイヤーのインデックス（自動発言ループ用）
 _next_llm_speaker_index: dict[int, int] = {}
 # 自発的発言の間隔（秒）
-AUTO_SPEAK_INTERVAL = 5
+AUTO_SPEAK_INTERVAL = 10
 
 
 def find_mentioned_llm(game: GameState, content: str) -> Optional[Player]:
