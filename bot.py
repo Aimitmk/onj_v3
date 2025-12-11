@@ -676,16 +676,21 @@ class OnenightCommands(app_commands.Group):
         existing_names = {p.username for p in game.player_list}
         added_names = []
 
-        for _ in range(count):
+        # ループ開始前にLLMプレイヤー数を取得（ループ中にadd_playerで変化するため）
+        base_llm_count = game.llm_player_count
+
+        for i in range(count):
             # LLMプレイヤー用に負のIDを生成（重複しないように）
-            llm_id = -1000 - game.llm_player_count - len(added_names)
+            llm_id = -1000 - base_llm_count - i
 
             # キャラクターを取得
             character = get_next_llm_character(existing_names)
             name = character["name"]
             existing_names.add(name)
 
-            game.add_player(llm_id, name, is_llm=True)
+            # プレイヤー追加（失敗した場合はスキップ）
+            if not game.add_player(llm_id, name, is_llm=True):
+                continue
 
             # キャラクター設定を割り当て
             player = game.get_player(llm_id)
