@@ -676,12 +676,18 @@ class OnenightCommands(app_commands.Group):
         existing_names = {p.username for p in game.player_list}
         added_names = []
 
-        # ループ開始前にLLMプレイヤー数を取得（ループ中にadd_playerで変化するため）
-        base_llm_count = game.llm_player_count
+        # 既存LLMプレイヤーの最小ID（最も負の値）を取得
+        # 新規IDはこの値より小さくする（既存がなければ-1000から開始）
+        llm_players = game.get_llm_players()
+        if llm_players:
+            min_existing_id = min(p.user_id for p in llm_players)
+            base_id = min_existing_id - 1
+        else:
+            base_id = -1000
 
         for i in range(count):
             # LLMプレイヤー用に負のIDを生成（重複しないように）
-            llm_id = -1000 - base_llm_count - i
+            llm_id = base_id - i
 
             # キャラクターを取得
             character = get_next_llm_character(existing_names)
